@@ -1,0 +1,50 @@
+# Environment
+.env
+*.env
+
+# Data (ne pas versionner les conversations personnelles)
+data/raw_conversations/*.txt
+data/raw_conversations/*.json
+data/processed/
+data/memory.db
+data/personality_profile/profile.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Keep folders
+!data/raw_conversations/.gitkeep
+!data/processed/.gitkeep
+!data/personality_profile/.gitkeep
+
+# WhatsApp Bridge
+whatsapp-bridge/.wa_auth/
+whatsapp-bridge/node_modules/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
