@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -138,17 +138,25 @@ async def import_conversation(file: UploadFile = File(...)):
         f.write(content)
 
     try:
-        report = analyzer.analyze_file(dest)
+        report, all_messages, my_messages = analyzer.analyze_file(dest)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, f"Erreur d'analyse : {e}")
 
     if "error" in report:
         raise HTTPException(422, detail=report["error"])
 
+    # Sauvegarde dans la base de données (optionnel mais recommandé)
+    saved = store.save_messages(all_messages, MY_NAME)
+    print(f"💾 {saved} messages sauvegardés en base (sur {len(all_messages)} analysés)")
+
     store.log_event("import", {
         "file": file.filename,
         "source": report.get("source"),
         "my_messages": report.get("my_messages"),
+        "total_messages": len(all_messages),
+        "saved_in_db": saved,
     })
 
     return ImportResponse(
@@ -275,6 +283,34 @@ def get_history(limit: int = 20):
 @app.get("/events")
 def get_events(limit: int = 20):
     return {"events": store.get_events(limit=limit)}
+
+
+# ── Conversations importées (pour l'affichage frontend) ──────
+
+@app.get("/conversations")
+def list_conversations():
+    """Liste tous les interlocuteurs (senders) avec leur nombre de messages importés."""
+    if store.use_supabase:
+        res = store._sb.table("messages").select("sender", count="exact").eq("is_mine", False).execute()
+        senders = {}
+        for m in res.data or []:
+            senders[m["sender"]] = senders.get(m["sender"], 0) + 1
+        return {"conversations": [{"name": k, "message_count": v} for k, v in senders.items()]}
+    else:
+        with store._conn() as conn:
+            rows = conn.execute("SELECT sender, COUNT(*) as cnt FROM messages WHERE is_mine = 0 GROUP BY sender ORDER BY cnt DESC").fetchall()
+        return {"conversations": [{"name": r["sender"], "message_count": r["cnt"]} for r in rows]}
+
+@app.get("/conversations/{sender}")
+def get_conversation_messages(sender: str, limit: int = 100):
+    """Retourne les messages d'une conversation avec un interlocuteur (ordre chronologique)."""
+    if store.use_supabase:
+        res = store._sb.table("messages").select("*").eq("sender", sender).order("timestamp", desc=False).limit(limit).execute()
+        return {"messages": res.data or []}
+    else:
+        with store._conn() as conn:
+            rows = conn.execute("SELECT * FROM messages WHERE sender = ? ORDER BY timestamp ASC LIMIT ?", (sender, limit)).fetchall()
+        return {"messages": [dict(r) for r in rows]}
 
 
 # ─────────────────────────────────────────────────────────────
