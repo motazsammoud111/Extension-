@@ -1,325 +1,306 @@
 """
-main.py — API FastAPI du Digital Twin AI
-Endpoints : /import, /personality, /suggest, /train, /stats
+conversation_analyzer.py — Parseur multi-sources de conversations
+Supporte : WhatsApp (.txt), Telegram (JSON), Instagram (JSON), Messenger (JSON)
+Retourne désormais aussi les messages bruts pour stockage en base.
 """
 
-import os
-import sys
+import json
+import re
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
-
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-
-sys.path.insert(0, str(Path(__file__).parent))
+from typing import List, Optional, Dict, Tuple
 
 from personality_engine import PersonalityEngine
-from conversation_analyzer import ConversationAnalyzer
-from response_generator import ResponseGenerator
-from memory_store import MemoryStore
 
 
 # ─────────────────────────────────────────────────────────────
-# Config
+# Structures de données
 # ─────────────────────────────────────────────────────────────
 
-MY_NAME = os.getenv("MY_NAME", "Motaz")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+class Message:
+    def __init__(self, sender: str, text: str, timestamp: str, source: str):
+        self.sender = sender
+        self.text = text
+        self.timestamp = timestamp   # ISO 8601
+        self.source = source
 
-BASE_DIR = Path(__file__).parent.parent
-DATA_DIR = BASE_DIR / "data"
-RAW_DIR  = DATA_DIR / "raw_conversations"
-PROC_DIR = DATA_DIR / "processed"
-PROF_DIR = DATA_DIR / "personality_profile"
-PROF_PATH = PROF_DIR / "profile.json"
-DB_PATH  = DATA_DIR / "memory.db"
+    def to_dict(self) -> dict:
+        return {
+            "sender": self.sender,
+            "text": self.text,
+            "timestamp": self.timestamp,
+            "source": self.source,
+        }
 
-for d in [RAW_DIR, PROC_DIR, PROF_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
-
-
-# ─────────────────────────────────────────────────────────────
-# Services
-# ─────────────────────────────────────────────────────────────
-
-engine   = PersonalityEngine(profile_path=PROF_PATH)
-analyzer = ConversationAnalyzer(my_name=MY_NAME, engine=engine)
-generator = ResponseGenerator(engine=engine, api_key=GROQ_API_KEY)
-store    = MemoryStore(db_path=str(DB_PATH))
+    def __repr__(self):
+        return f"[{self.timestamp[:16]}] {self.sender}: {self.text[:60]}"
 
 
 # ─────────────────────────────────────────────────────────────
-# App FastAPI
+# Parseurs
 # ─────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Digital Twin AI", version="1.0.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ─────────────────────────────────────────────────────────────
-# Schemas
-# ─────────────────────────────────────────────────────────────
-
-class SuggestRequest(BaseModel):
-    message: str
-    person_type: str = "close_friend"
-    context_note: str = ""
-    history: Optional[List[dict]] = None
-
-class SuggestResponse(BaseModel):
-    response: str
-    alternatives: List[str]
-    confidence: float
-    person_type: str
-    model: str
-    response_id: Optional[int] = None
-
-class FeedbackRequest(BaseModel):
-    response_id: int
-    rating: int = Field(..., ge=-1, le=1)
-    used: bool = False
-
-class ContactRequest(BaseModel):
-    name: str
-    person_type: str = "unknown"
-    platform: str = ""
-    notes: str = ""
-
-class TrainResponse(BaseModel):
-    status: str
-    messages_before: int
-    messages_after: int
-    profile_version: int
-
-class ImportResponse(BaseModel):
-    status: str
-    file: str
-    source: str
-    my_messages: int
-    total_messages: int
-    participation_rate: float
-
-
-# ─────────────────────────────────────────────────────────────
-# Endpoints
-# ─────────────────────────────────────────────────────────────
-
-@app.get("/")
-def root():
-    return {
-        "twin": MY_NAME,
-        "status": "online",
-        "messages_analyzed": engine.get_profile().total_messages_analyzed,
-        "profile_version": engine.get_profile().version,
+class WhatsAppParser:
+    PATTERNS = [
+        re.compile(r"^\[(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?)\]\s+([^:]+):\s(.+)$"),
+        re.compile(r"^(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}),\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?)\s+-\s+([^:]+):\s(.+)$"),
+    ]
+    SYSTEM_MESSAGES = {
+        "messages and calls are end-to-end encrypted", "this message was deleted",
+        "image omitted", "video omitted", "audio omitted", "document omitted",
+        "sticker omitted", "gif omitted", "<media omitted>",
+        "vous avez été ajouté", "a rejoint le groupe", "a quitté le groupe",
+        "a modifié l'icône", "a changé",
     }
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+    def parse(self, file_path: Path, my_name: str) -> Tuple[List[Message], List[Message]]:
+        all_msgs = []
+        my_msgs = []
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        current_msg = None
+        for line in lines:
+            line = line.rstrip("\n")
+            matched = False
+            for pattern in self.PATTERNS:
+                m = pattern.match(line)
+                if m:
+                    if current_msg:
+                        msg = self._finalize(current_msg, my_name)
+                        if msg:
+                            all_msgs.append(msg)
+                            if msg.sender.lower() == my_name.lower():
+                                my_msgs.append(msg)
+                    date_str, time_str, sender, text = m.groups()
+                    current_msg = {"date": date_str, "time": time_str, "sender": sender.strip(), "text": text.strip()}
+                    matched = True
+                    break
+            if not matched and current_msg:
+                current_msg["text"] += "\n" + line.strip()
+        if current_msg:
+            msg = self._finalize(current_msg, my_name)
+            if msg:
+                all_msgs.append(msg)
+                if msg.sender.lower() == my_name.lower():
+                    my_msgs.append(msg)
+        return my_msgs, all_msgs
+
+    def _finalize(self, raw: dict, my_name: str) -> Optional[Message]:
+        text = raw["text"].strip()
+        if any(s in text.lower() for s in self.SYSTEM_MESSAGES) or not text:
+            return None
+        ts = self._parse_timestamp(raw["date"], raw["time"])
+        return Message(sender=raw["sender"], text=text, timestamp=ts, source="whatsapp")
+
+    @staticmethod
+    def _parse_timestamp(date_str: str, time_str: str) -> str:
+        date_str = re.sub(r"[.\-]", "/", date_str)
+        time_str = time_str.strip()
+        formats = ["%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%y %H:%M:%S", "%d/%m/%y %H:%M",
+                   "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p", "%m/%d/%y %I:%M:%S %p", "%m/%d/%y %I:%M %p"]
+        combined = f"{date_str} {time_str}"
+        for fmt in formats:
+            try:
+                return datetime.strptime(combined, fmt).isoformat()
+            except ValueError:
+                continue
+        return datetime.now().isoformat()
 
 
-@app.post("/import", response_model=ImportResponse)
-async def import_conversation(file: UploadFile = File(...)):
-    ext = Path(file.filename).suffix.lower()
-    if ext not in (".txt", ".json"):
-        raise HTTPException(400, "Format non supporté. Utilise .txt ou .json.")
-
-    dest = RAW_DIR / file.filename
-    with open(dest, "wb") as f:
-        content = await file.read()
-        f.write(content)
-
-    try:
-        report, all_messages, my_messages = analyzer.analyze_file(dest)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(500, f"Erreur d'analyse : {e}")
-
-    if "error" in report:
-        raise HTTPException(422, detail=report["error"])
-
-    # Sauvegarde dans la base de données (optionnel mais recommandé)
-    saved = store.save_messages(all_messages, MY_NAME)
-    print(f"💾 {saved} messages sauvegardés en base (sur {len(all_messages)} analysés)")
-
-    store.log_event("import", {
-        "file": file.filename,
-        "source": report.get("source"),
-        "my_messages": report.get("my_messages"),
-        "total_messages": len(all_messages),
-        "saved_in_db": saved,
-    })
-
-    return ImportResponse(
-        status="success",
-        file=file.filename,
-        source=report.get("source", ""),
-        my_messages=report.get("my_messages", 0),
-        total_messages=report.get("total_messages", 0),
-        participation_rate=report.get("participation_rate", 0.0),
-    )
+class TelegramParser:
+    def parse(self, file_path: Path, my_name: str) -> Tuple[List[Message], List[Message]]:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        messages = data.get("messages", [])
+        all_msgs = []
+        my_msgs = []
+        for m in messages:
+            if m.get("type") != "message":
+                continue
+            sender = m.get("from", "") or m.get("actor", "")
+            date = m.get("date", "")
+            text_raw = m.get("text", "")
+            if isinstance(text_raw, list):
+                text = "".join(seg if isinstance(seg, str) else seg.get("text", "") for seg in text_raw)
+            else:
+                text = str(text_raw)
+            text = text.strip()
+            if not text:
+                continue
+            msg = Message(sender=sender, text=text, timestamp=date, source="telegram")
+            all_msgs.append(msg)
+            if sender.lower() == my_name.lower():
+                my_msgs.append(msg)
+        return my_msgs, all_msgs
 
 
-@app.get("/personality")
-def get_personality():
-    return engine.get_profile().to_dict()
-
-@app.get("/personality/summary")
-def get_personality_summary():
-    return {"summary": engine.get_profile().summary()}
-
-@app.get("/personality/prompt-preview")
-def get_prompt_preview(person_type: str = "close_friend"):
-    return {"system_prompt": generator.build_system_prompt_preview(person_type)}
-
-
-@app.post("/suggest", response_model=SuggestResponse)
-def suggest_response(req: SuggestRequest):
-    profile = engine.get_profile()
-    if profile.total_messages_analyzed == 0:
-        raise HTTPException(428, detail="Aucun profil chargé. Importe d'abord des conversations.")
-    if not GROQ_API_KEY:
-        raise HTTPException(503, detail="GROQ_API_KEY non configurée.")
-
-    result = generator.suggest(
-        incoming_message=req.message,
-        conversation_history=req.history,
-        person_type=req.person_type,
-        context_note=req.context_note,
-    )
-    if "error" in result:
-        raise HTTPException(502, detail=result["error"])
-
-    response_id = store.save_response(
-        incoming=req.message,
-        response=result["response"],
-        alternatives=result.get("alternatives", []),
-        person_type=req.person_type,
-        confidence=result.get("confidence", 0.0),
-        model=result.get("model", ""),
-    )
-    return SuggestResponse(
-        response=result["response"],
-        alternatives=result.get("alternatives", []),
-        confidence=result.get("confidence", 0.0),
-        person_type=req.person_type,
-        model=result.get("model", ""),
-        response_id=response_id,
-    )
+class InstagramParser:
+    def parse(self, file_path: Path, my_name: str) -> Tuple[List[Message], List[Message]]:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        messages = data.get("messages", [])
+        all_msgs = []
+        my_msgs = []
+        for m in messages:
+            sender = m.get("sender_name", "")
+            content = m.get("content", "").strip()
+            ts_ms = m.get("timestamp_ms", 0)
+            if not content:
+                continue
+            if content in {"Vous avez envoyé une photo.", "You sent a photo.",
+                           "Vous avez envoyé une vidéo.", "You sent a video."}:
+                continue
+            ts = datetime.fromtimestamp(ts_ms / 1000).isoformat() if ts_ms else ""
+            try:
+                sender = sender.encode("latin1").decode("utf-8")
+                content = content.encode("latin1").decode("utf-8")
+            except Exception:
+                pass
+            msg = Message(sender=sender, text=content, timestamp=ts, source="instagram")
+            all_msgs.append(msg)
+            if sender.lower() == my_name.lower():
+                my_msgs.append(msg)
+        return my_msgs, all_msgs
 
 
-@app.post("/feedback")
-def submit_feedback(req: FeedbackRequest):
-    store.rate_response(req.response_id, req.rating, req.used)
-    return {"status": "ok"}
-
-
-@app.post("/train", response_model=TrainResponse)
-def retrain():
-    before = engine.get_profile().total_messages_analyzed
-    all_my_msgs = store.get_my_messages(limit=10000)
-    if not all_my_msgs:
-        raise HTTPException(428, detail="Aucun message en base. Importe d'abord des conversations.")
-    engine.reset()
-    by_source = {}
-    for msg in all_my_msgs:
-        src = msg.get("source", "unknown")
-        by_source.setdefault(src, []).append(msg)
-    for src, msgs in by_source.items():
-        engine.ingest(msgs, source=src)
-    after = engine.get_profile().total_messages_analyzed
-    store.save_personality_snapshot(engine.get_profile().to_dict(), engine.get_profile().version)
-    store.log_event("retrain", {"messages": after, "sources": list(by_source.keys())})
-    return TrainResponse(
-        status="success",
-        messages_before=before,
-        messages_after=after,
-        profile_version=engine.get_profile().version,
-    )
-
-
-@app.get("/stats")
-def get_stats():
-    db_stats = store.get_stats()
-    profile = engine.get_profile()
-    return {
-        **db_stats,
-        "profile": {
-            "name": profile.name,
-            "version": profile.version,
-            "last_updated": profile.last_updated,
-            "dominant_tone": profile.dominant_tone,
-            "avg_message_length": profile.avg_message_length,
-            "emoji_usage_rate": profile.emoji_usage_rate,
-            "top_emojis": profile.top_emojis[:5],
-            "sources": profile.sources,
-        },
-    }
-
-
-@app.get("/contacts")
-def list_contacts():
-    return {"contacts": store.list_contacts()}
-
-@app.post("/contacts")
-def add_contact(req: ContactRequest):
-    store.upsert_contact(req.name, req.person_type, req.platform, req.notes)
-    return {"status": "ok"}
-
-
-@app.get("/history")
-def get_history(limit: int = 20):
-    return {"responses": store.get_recent_responses(limit=limit)}
-
-@app.get("/events")
-def get_events(limit: int = 20):
-    return {"events": store.get_events(limit=limit)}
-
-
-# ── Conversations importées (pour l'affichage frontend) ──────
-
-@app.get("/conversations")
-def list_conversations():
-    """Liste tous les interlocuteurs (senders) avec leur nombre de messages importés."""
-    if store.use_supabase:
-        res = store._sb.table("messages").select("sender", count="exact").eq("is_mine", False).execute()
-        senders = {}
-        for m in res.data or []:
-            senders[m["sender"]] = senders.get(m["sender"], 0) + 1
-        return {"conversations": [{"name": k, "message_count": v} for k, v in senders.items()]}
-    else:
-        with store._conn() as conn:
-            rows = conn.execute("SELECT sender, COUNT(*) as cnt FROM messages WHERE is_mine = 0 GROUP BY sender ORDER BY cnt DESC").fetchall()
-        return {"conversations": [{"name": r["sender"], "message_count": r["cnt"]} for r in rows]}
-
-@app.get("/conversations/{sender}")
-def get_conversation_messages(sender: str, limit: int = 100):
-    """Retourne les messages d'une conversation avec un interlocuteur (ordre chronologique)."""
-    if store.use_supabase:
-        res = store._sb.table("messages").select("*").eq("sender", sender).order("timestamp", desc=False).limit(limit).execute()
-        return {"messages": res.data or []}
-    else:
-        with store._conn() as conn:
-            rows = conn.execute("SELECT * FROM messages WHERE sender = ? ORDER BY timestamp ASC LIMIT ?", (sender, limit)).fetchall()
-        return {"messages": [dict(r) for r in rows]}
+class MessengerParser:
+    """Parse les exports Facebook Messenger (message_1.json)."""
+    def parse(self, file_path: Path, my_name: str) -> Tuple[List[Message], List[Message]]:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        all_msgs = []
+        my_msgs = []
+        for m in data.get("messages", []):
+            sender = m.get("sender_name", "")
+            if not sender or "Messages" in m.get("content", ""):
+                continue
+            content = m.get("content", "").strip()
+            if not content:
+                continue
+            ts_ms = m.get("timestamp_ms", 0)
+            ts = datetime.fromtimestamp(ts_ms / 1000).isoformat() if ts_ms else ""
+            msg = Message(sender=sender, text=content, timestamp=ts, source="messenger")
+            all_msgs.append(msg)
+            if sender.lower() == my_name.lower():
+                my_msgs.append(msg)
+        return my_msgs, all_msgs
 
 
 # ─────────────────────────────────────────────────────────────
-# Lancement
+# ConversationAnalyzer — orchestrateur principal
 # ─────────────────────────────────────────────────────────────
+
+class ConversationAnalyzer:
+    def __init__(self, my_name: str, engine: Optional[PersonalityEngine] = None):
+        self.my_name = my_name
+        self.engine = engine or PersonalityEngine()
+        self.wa_parser = WhatsAppParser()
+        self.tg_parser = TelegramParser()
+        self.ig_parser = InstagramParser()
+        self.messenger_parser = MessengerParser()
+
+    def analyze_file(self, file_path: Path) -> Tuple[dict, List[dict], List[dict]]:
+        """
+        Analyse un fichier de conversation.
+        Retourne (rapport, tous_les_messages_dict, mes_messages_dict)
+        """
+        file_path = Path(file_path)
+        source = self._detect_source(file_path)
+        print(f"\n📂 Analyse : {file_path.name}  [{source}]")
+        my_msgs, all_msgs = self._parse(file_path, source)
+        if not my_msgs:
+            return {"error": f"Aucun message de '{self.my_name}' trouvé dans {file_path.name}"}, [], []
+        # Mettre à jour le moteur de personnalité
+        msgs_for_engine = [m.to_dict() for m in my_msgs]
+        self.engine.ingest(msgs_for_engine, source=source)
+        report = self._build_report(my_msgs, all_msgs, source, file_path)
+        self._print_report(report)
+        # Retourner les messages bruts pour stockage
+        all_dicts = [m.to_dict() for m in all_msgs]
+        my_dicts = [m.to_dict() for m in my_msgs]
+        return report, all_dicts, my_dicts
+
+    def analyze_folder(self, folder_path: Path) -> List[dict]:
+        folder_path = Path(folder_path)
+        reports = []
+        for f in sorted(folder_path.iterdir()):
+            if f.suffix.lower() in (".txt", ".json") and f.is_file():
+                try:
+                    report, _, _ = self.analyze_file(f)
+                    reports.append(report)
+                except Exception as e:
+                    print(f"  ❌ Erreur sur {f.name}: {e}")
+        return reports
+
+    def _detect_source(self, file_path: Path) -> str:
+        name = file_path.stem.lower()
+        if "telegram" in name or "result" in name:
+            return "telegram"
+        if "instagram" in name:
+            return "instagram"
+        if "message_1" in name:
+            return "messenger"
+        return "whatsapp"
+
+    def _parse(self, file_path: Path, source: str) -> Tuple[List[Message], List[Message]]:
+        if source == "telegram":
+            return self.tg_parser.parse(file_path, self.my_name)
+        if source == "instagram":
+            return self.ig_parser.parse(file_path, self.my_name)
+        if source == "messenger":
+            return self.messenger_parser.parse(file_path, self.my_name)
+        return self.wa_parser.parse(file_path, self.my_name)
+
+    def _build_report(self, my_msgs: List[Message], all_msgs: List[Message],
+                      source: str, file_path: Path) -> dict:
+        my_texts = [m.text for m in my_msgs]
+        avg_len = sum(len(t.split()) for t in my_texts) / len(my_texts)
+        interlocutors = list({m.sender for m in all_msgs if m.sender.lower() != self.my_name.lower()})
+        hour_dist = {}
+        for m in my_msgs:
+            try:
+                h = datetime.fromisoformat(m.timestamp).hour
+                hour_dist[h] = hour_dist.get(h, 0) + 1
+            except Exception:
+                pass
+        peak_hour = max(hour_dist, key=hour_dist.get) if hour_dist else None
+        return {
+            "file": file_path.name,
+            "source": source,
+            "total_messages": len(all_msgs),
+            "my_messages": len(my_msgs),
+            "participation_rate": round(len(my_msgs) / max(len(all_msgs), 1) * 100, 1),
+            "avg_message_length_words": round(avg_len, 1),
+            "interlocutors": interlocutors,
+            "peak_hour": peak_hour,
+            "date_range": {
+                "from": min((m.timestamp for m in all_msgs if m.timestamp), default=""),
+                "to": max((m.timestamp for m in all_msgs if m.timestamp), default=""),
+            },
+        }
+
+    def _print_report(self, report: dict):
+        if "error" in report:
+            print(f"  ⚠️  {report['error']}")
+            return
+        print(f"  ✅ {report['my_messages']} / {report['total_messages']} messages "
+              f"({report['participation_rate']}%)\n"
+              f"  📏 Longueur moy : {report['avg_message_length_words']} mots\n"
+              f"  👥 Interlocuteurs : {', '.join(report['interlocutors'][:5])}\n"
+              f"  🕐 Heure de pointe : {report.get('peak_hour', '?')}h")
+
 
 if __name__ == "__main__":
-    import uvicorn
-    print(f"\n🤖 Digital Twin AI — {MY_NAME}")
-    print(f"📊 Messages analysés : {engine.get_profile().total_messages_analyzed}")
-    print(f"🚀 Démarrage sur http://localhost:8000\n")
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    import sys, os
+    MY_NAME = os.getenv("MY_NAME", "Motaz")
+    analyzer = ConversationAnalyzer(my_name=MY_NAME)
+    if len(sys.argv) > 1:
+        path = Path(sys.argv[1])
+        if path.is_dir():
+            analyzer.analyze_folder(path)
+        else:
+            analyzer.analyze_file(path)
+    else:
+        print("🔍 Aucun fichier fourni — mode démo")
+        print("Usage : python conversation_analyzer.py <fichier_ou_dossier>")
+    print("\n" + analyzer.engine.get_profile().summary())
