@@ -1,71 +1,88 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import axios from 'axios'
 
-// Le bridge WhatsApp tourne sur le port 3001 (local ou Render)
 const WA_BRIDGE = import.meta.env.VITE_WA_BRIDGE_URL || 'http://localhost:3001'
 
 export default function WhatsAppPanel({ api }) {
-  const [status, setStatus] = useState('disconnected')  // disconnected | qr | connected
+  // Bridge state
+  const [status, setStatus] = useState('disconnected')
   const [qr, setQr] = useState(null)
-  const [chats, setChats] = useState([])
-  const [selectedChat, setSelectedChat] = useState(null)
-  const [messages, setMessages] = useState([])
+  const [bridgeChats, setBridgeChats] = useState([])
+  const [selectedBridgeChat, setSelectedBridgeChat] = useState(null)
+  const [bridgeMessages, setBridgeMessages] = useState([])
   const [suggestion, setSuggestion] = useState(null)
+  
+  // Imported conversations state
+  const [importedConvs, setImportedConvs] = useState([])
+  const [selectedImported, setSelectedImported] = useState(null)
+  const [importedMessages, setImportedMessages] = useState([])
+  const [activeTab, setActiveTab] = useState('bridge')
+  
   const [loading, setLoading] = useState(false)
-  const pollRef = useRef(null)
 
   useEffect(() => {
     checkStatus()
-    pollRef.current = setInterval(checkStatus, 3000)
-    return () => clearInterval(pollRef.current)
+    const interval = setInterval(checkStatus, 3000)
+    return () => clearInterval(interval)
   }, [])
 
   useEffect(() => {
-    if (status === 'connected') loadChats()
+    if (status === 'connected') loadBridgeChats()
   }, [status])
 
+  useEffect(() => {
+    if (activeTab === 'imported') loadImportedConversations()
+  }, [activeTab])
+
+  useEffect(() => {
+    if (selectedBridgeChat && activeTab === 'bridge') loadBridgeMessages()
+  }, [selectedBridgeChat])
+
+  useEffect(() => {
+    if (selectedImported && activeTab === 'imported') loadImportedMessages()
+  }, [selectedImported])
+
+  // Bridge functions
   async function checkStatus() {
     try {
       const res = await axios.get(`${WA_BRIDGE}/status`)
       setStatus(res.data.status)
       if (res.data.qr) setQr(res.data.qr)
-      if (res.data.status === 'connected') setQr(null)
     } catch {
       setStatus('bridge_offline')
     }
   }
 
   async function startConnection() {
+    await axios.post(`${WA_BRIDGE}/connect`)
+    setStatus('qr')
+  }
+
+  async function loadBridgeChats() {
     try {
-      await axios.post(`${WA_BRIDGE}/connect`)
-      setStatus('qr')
-    } catch {
-      alert('Bridge WhatsApp hors ligne. Lance : node whatsapp-bridge/index.js')
+      const res = await axios.get(`${WA_BRIDGE}/chats`)
+      setBridgeChats(res.data.chats || [])
+    } catch (err) {
+      console.error(err)
     }
   }
 
-  async function loadChats() {
-    try {
-      const res = await axios.get(`${WA_BRIDGE}/chats`)
-      setChats(res.data.chats || [])
-    } catch {}
-  }
-
-  async function selectChat(chat) {
-    setSelectedChat(chat)
+  async function loadBridgeMessages() {
+    if (!selectedBridgeChat) return
     setLoading(true)
-    setSuggestion(null)
     try {
-      const res = await axios.get(`${WA_BRIDGE}/messages/${chat.id}`)
-      setMessages(res.data.messages || [])
-      // Auto-suggest sur le dernier message reçu
-      const lastIncoming = res.data.messages?.filter(m => !m.fromMe).slice(-1)[0]
+      const res = await axios.get(`${WA_BRIDGE}/messages/${selectedBridgeChat.id}`)
+      setBridgeMessages(res.data.messages || [])
+      const lastIncoming = (res.data.messages || []).filter(m => !m.fromMe).slice(-1)[0]
       if (lastIncoming) await getSuggestion(lastIncoming.body)
-    } catch {}
+    } catch (err) {
+      console.error(err)
+    }
     setLoading(false)
   }
 
   async function getSuggestion(msgText) {
+    if (!msgText) return
     try {
       const res = await axios.post(`${api}/suggest`, {
         message: msgText,
@@ -76,189 +93,185 @@ export default function WhatsAppPanel({ api }) {
   }
 
   async function sendResponse(text) {
-    if (!selectedChat) return
+    if (!selectedBridgeChat) return
     try {
       await axios.post(`${WA_BRIDGE}/send`, {
-        chatId: selectedChat.id,
+        chatId: selectedBridgeChat.id,
         message: text,
       })
       setSuggestion(null)
-      await selectChat(selectedChat)
+      await loadBridgeMessages()
     } catch {
       alert('Erreur envoi message')
     }
   }
 
-  // ── Rendu selon l'état ────────────────────────────────────
-  if (status === 'bridge_offline') return (
-    <div>
-      <h2 style={s.title}>📱 WhatsApp — Connexion QR</h2>
-      <div style={s.card}>
-        <div style={s.bigIcon}>🔌</div>
-        <h3 style={{ color: '#f87171', marginBottom: 8 }}>Bridge hors ligne</h3>
-        <p style={s.muted}>Le bridge WhatsApp ne tourne pas encore.</p>
-        <p style={s.muted}>Dans un nouveau terminal, lance :</p>
-        <div style={s.codeBlock}>
-          cd whatsapp-bridge{'\n'}
-          npm install{'\n'}
-          node index.js
-        </div>
-        <button style={s.btn} onClick={checkStatus}>🔄 Vérifier à nouveau</button>
-      </div>
-    </div>
-  )
+  // Imported functions
+  async function loadImportedConversations() {
+    try {
+      const res = await axios.get(`${api}/conversations`)
+      setImportedConvs(res.data.conversations || [])
+    } catch (err) {
+      console.error(err)
+    }
+  }
 
-  if (status === 'disconnected') return (
-    <div>
-      <h2 style={s.title}>📱 WhatsApp — Connexion QR</h2>
-      <div style={s.card}>
-        <div style={s.bigIcon}>📱</div>
-        <h3 style={{ color: '#e2e8f0', marginBottom: 8 }}>Connecter ton WhatsApp</h3>
-        <p style={s.muted}>Le twin va lire tes messages et suggérer des réponses dans ton style.</p>
-        <p style={s.muted}>Ton entourage ne saura pas que c'est le twin qui répond (sauf si tu leur dis).</p>
-        <button style={s.btnGreen} onClick={startConnection}>
-          📲 Scanner le QR code WhatsApp
-        </button>
-      </div>
-    </div>
-  )
+  async function loadImportedMessages() {
+    if (!selectedImported) return
+    setLoading(true)
+    try {
+      const res = await axios.get(`${api}/conversations/${encodeURIComponent(selectedImported.name)}`)
+      setImportedMessages(res.data.messages || [])
+    } catch (err) {
+      console.error(err)
+    }
+    setLoading(false)
+  }
 
-  if (status === 'qr' && qr) return (
-    <div>
-      <h2 style={s.title}>📱 Scanner le QR code</h2>
-      <div style={{ ...s.card, textAlign: 'center' }}>
-        <p style={{ ...s.muted, marginBottom: 16 }}>
-          Ouvre WhatsApp → Appareils connectés → Connecter un appareil
-        </p>
-        <img
-          src={qr}
-          alt="QR Code WhatsApp"
-          style={{ width: 250, height: 250, borderRadius: 12, background: '#fff', padding: 8 }}
-        />
-        <p style={{ ...s.muted, marginTop: 16 }}>En attente du scan...</p>
-        <div style={s.qrDot} />
+  // Render
+  if (status === 'bridge_offline') {
+    return (
+      <div style={styles.card}>
+        <div style={styles.bigIcon}>🔌</div>
+        <h3 style={{ color: '#f87171' }}>Bridge hors ligne</h3>
+        <p>Lance : <code>cd whatsapp-bridge && npm start</code></p>
+        <button style={styles.btn} onClick={checkStatus}>🔄 Vérifier</button>
       </div>
-    </div>
-  )
+    )
+  }
 
-  if (status === 'connected') return (
-    <div>
-      <h2 style={s.title}>📱 WhatsApp connecté ✅</h2>
-      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16 }}>
-        {/* Liste des chats */}
-        <div style={s.card}>
-          <div style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase', marginBottom: 12 }}>
-            Conversations récentes
-          </div>
-          {chats.length === 0 ? (
-            <p style={s.muted}>Chargement...</p>
-          ) : chats.map(chat => (
-            <div
-              key={chat.id}
-              onClick={() => selectChat(chat)}
-              style={{
-                ...s.chatItem,
-                background: selectedChat?.id === chat.id ? '#1e3a5f' : 'transparent',
-              }}
-            >
-              <div style={{ fontWeight: 600, fontSize: 14 }}>{chat.name}</div>
-              <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-                {chat.lastMessage?.slice(0, 40)}...
+  if (status === 'disconnected') {
+    return (
+      <div style={styles.card}>
+        <div style={styles.bigIcon}>📱</div>
+        <h3>Connecter ton WhatsApp</h3>
+        <p>Le twin pourra lire tes messages et suggérer des réponses en direct.</p>
+        <button style={styles.btnGreen} onClick={startConnection}>📲 Scanner le QR code</button>
+      </div>
+    )
+  }
+
+  if (status === 'qr' && qr) {
+    return (
+      <div style={{ ...styles.card, textAlign: 'center' }}>
+        <p>Ouvre WhatsApp → Appareils connectés → Connecter un appareil</p>
+        <img src={qr} alt="QR" style={{ width: 250, height: 250, background: '#fff', padding: 8, borderRadius: 12 }} />
+        <div style={styles.qrDot} />
+      </div>
+    )
+  }
+
+  return (
+    <div style={styles.container}>
+      <h2 style={styles.title}>📱 WhatsApp connecté ✅</h2>
+      <div style={styles.tabs}>
+        <button onClick={() => setActiveTab('bridge')} style={{ ...styles.tab, ...(activeTab === 'bridge' && styles.activeTab) }}>💬 Messages en direct</button>
+        <button onClick={() => setActiveTab('imported')} style={{ ...styles.tab, ...(activeTab === 'imported' && styles.activeTab) }}>📚 Historique importé ({importedConvs.length})</button>
+      </div>
+
+      {activeTab === 'bridge' && (
+        <div style={styles.twoColumns}>
+          <div style={styles.chatList}>
+            <div style={styles.listHeader}>Conversations récentes</div>
+            {bridgeChats.map(chat => (
+              <div key={chat.id} onClick={() => setSelectedBridgeChat(chat)} style={{ ...styles.chatCard, background: selectedBridgeChat?.id === chat.id ? '#1e3a5f' : '#0f172a' }}>
+                <div style={styles.chatName}>{chat.name}</div>
+                <div style={styles.chatPreview}>{chat.lastMessage?.slice(0, 50)}</div>
               </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Messages + suggestion */}
-        <div>
-          {!selectedChat ? (
-            <div style={{ ...s.card, textAlign: 'center', padding: 40 }}>
-              <p style={s.muted}>← Sélectionne une conversation</p>
-            </div>
-          ) : (
-            <>
-              <div style={{ ...s.card, maxHeight: 300, overflowY: 'auto' }}>
-                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
-                  {selectedChat.name}
+            ))}
+          </div>
+          <div style={styles.conversation}>
+            {!selectedBridgeChat ? (
+              <div style={styles.placeholder}>← Sélectionne une conversation</div>
+            ) : (
+              <>
+                <div style={styles.messagesArea}>
+                  {loading && <p>Chargement...</p>}
+                  {bridgeMessages.map((msg, i) => (
+                    <div key={i} style={{ ...styles.messageBubble, alignSelf: msg.fromMe ? 'flex-end' : 'flex-start' }}>
+                      <div style={styles.bubbleContent}>{msg.body}</div>
+                      <div style={styles.timestamp}>{new Date(msg.timestamp * 1000).toLocaleTimeString()}</div>
+                    </div>
+                  ))}
                 </div>
-                {loading ? <p style={s.muted}>Chargement...</p> : messages.slice(-15).map((m, i) => (
-                  <div key={i} style={{
-                    ...s.msg,
-                    alignSelf: m.fromMe ? 'flex-end' : 'flex-start',
-                    background: m.fromMe ? '#1e3a5f' : '#1e293b',
-                  }}>
-                    {m.body}
+                {suggestion && (
+                  <div style={styles.suggestionCard}>
+                    <div style={styles.suggestionHeader}>🤖 Réponse suggérée ({Math.round(suggestion.confidence * 100)}%)</div>
+                    <div style={styles.suggestionText}>{suggestion.response}</div>
+                    <div style={styles.suggestionActions}>
+                      <button style={styles.btnGreen} onClick={() => sendResponse(suggestion.response)}>✅ Envoyer</button>
+                      {suggestion.alternatives?.[0] && <button style={styles.btnAlt} onClick={() => sendResponse(suggestion.alternatives[0])}>🔄 Alternative</button>}
+                      <button style={styles.btnIgnore} onClick={() => setSuggestion(null)}>✕ Ignorer</button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'imported' && (
+        <div style={styles.twoColumns}>
+          <div style={styles.chatList}>
+            <div style={styles.listHeader}>Toutes les conversations importées</div>
+            {importedConvs.length === 0 && <p style={styles.muted}>Aucune conversation importée. Va dans l'onglet Importer.</p>}
+            {importedConvs.map(conv => (
+              <div key={conv.name} onClick={() => setSelectedImported(conv)} style={{ ...styles.chatCard, background: selectedImported?.name === conv.name ? '#1e3a5f' : '#0f172a' }}>
+                <div style={styles.chatName}>{conv.name}</div>
+                <div style={styles.chatPreview}>{conv.message_count} messages</div>
+              </div>
+            ))}
+          </div>
+          <div style={styles.conversation}>
+            {!selectedImported ? (
+              <div style={styles.placeholder}>← Sélectionne une conversation</div>
+            ) : (
+              <div style={styles.messagesArea}>
+                {loading && <p>Chargement...</p>}
+                {importedMessages.map((msg, i) => (
+                  <div key={i} style={{ ...styles.messageBubble, alignSelf: msg.is_mine ? 'flex-end' : 'flex-start' }}>
+                    <div style={styles.bubbleContent}>{msg.text}</div>
+                    <div style={styles.timestamp}>{new Date(msg.timestamp).toLocaleString()}</div>
                   </div>
                 ))}
               </div>
-
-              {suggestion && (
-                <div style={s.card}>
-                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
-                    🤖 Réponse suggérée ({Math.round(suggestion.confidence * 100)}%)
-                  </div>
-                  <div style={s.suggestionBox}>{suggestion.response}</div>
-                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                    <button style={s.btnGreen} onClick={() => sendResponse(suggestion.response)}>
-                      ✅ Envoyer
-                    </button>
-                    {suggestion.alternatives?.[0] && (
-                      <button style={s.btn} onClick={() => sendResponse(suggestion.alternatives[0])}>
-                        🔄 Alternative
-                      </button>
-                    )}
-                    <button style={{ ...s.btn, color: '#f87171' }}
-                      onClick={() => setSuggestion(null)}>
-                      ✕ Ignorer
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
-
-  return <div style={s.muted}>Connexion en cours...</div>
 }
 
-const s = {
-  title: { fontSize: 20, fontWeight: 700, color: '#f1f5f9', marginBottom: 20 },
-  card: {
-    background: '#1e293b', borderRadius: 12, padding: 24,
-    border: '1px solid #334155', marginBottom: 16,
-  },
-  muted: { color: '#64748b', fontSize: 14, lineHeight: 1.6 },
-  bigIcon: { fontSize: 48, marginBottom: 12 },
-  codeBlock: {
-    background: '#0f172a', borderRadius: 8, padding: '12px 16px',
-    fontFamily: 'monospace', fontSize: 13, color: '#86efac',
-    margin: '12px 0', whiteSpace: 'pre',
-  },
-  btn: {
-    background: '#0f172a', color: '#94a3b8', border: '1px solid #334155',
-    borderRadius: 8, padding: '10px 18px', fontSize: 14, cursor: 'pointer', marginTop: 12,
-  },
-  btnGreen: {
-    background: '#166534', color: '#86efac', border: 'none',
-    borderRadius: 8, padding: '11px 22px', fontSize: 14, fontWeight: 600, cursor: 'pointer',
-  },
-  chatItem: {
-    padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
-    marginBottom: 4, transition: 'background 0.1s',
-  },
-  msg: {
-    maxWidth: '75%', padding: '8px 12px', borderRadius: 8,
-    fontSize: 14, marginBottom: 6, display: 'flex',
-  },
-  suggestionBox: {
-    background: '#0f172a', borderLeft: '3px solid #22c55e',
-    borderRadius: '0 8px 8px 0', padding: '14px', color: '#e2e8f0', fontSize: 15,
-  },
-  qrDot: {
-    width: 10, height: 10, borderRadius: '50%', background: '#22c55e',
-    margin: '12px auto 0', animation: 'pulse 1.5s infinite',
-  },
+const styles = {
+  container: { display: 'flex', flexDirection: 'column', gap: 20 },
+  title: { fontSize: 20, fontWeight: 700, color: '#f1f5f9' },
+  tabs: { display: 'flex', gap: 10, borderBottom: '1px solid #334155' },
+  tab: { background: 'none', border: 'none', color: '#94a3b8', fontSize: 14, padding: '8px 16px', cursor: 'pointer' },
+  activeTab: { color: '#60a5fa', borderBottom: '2px solid #60a5fa' },
+  twoColumns: { display: 'grid', gridTemplateColumns: '300px 1fr', gap: 20 },
+  chatList: { background: '#1e293b', borderRadius: 12, padding: 16, border: '1px solid #334155', height: '70vh', overflowY: 'auto' },
+  listHeader: { fontSize: 12, color: '#64748b', textTransform: 'uppercase', marginBottom: 12 },
+  chatCard: { padding: '12px', borderRadius: 10, marginBottom: 8, cursor: 'pointer' },
+  chatName: { fontWeight: 600, fontSize: 14 },
+  chatPreview: { fontSize: 12, color: '#94a3b8', marginTop: 4 },
+  conversation: { background: '#1e293b', borderRadius: 12, border: '1px solid #334155', display: 'flex', flexDirection: 'column', height: '70vh' },
+  messagesArea: { flex: 1, padding: 16, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 },
+  messageBubble: { maxWidth: '70%', display: 'flex', flexDirection: 'column' },
+  bubbleContent: { background: '#0f172a', padding: '8px 12px', borderRadius: 12, fontSize: 14 },
+  timestamp: { fontSize: 10, color: '#64748b', marginTop: 2, marginLeft: 8 },
+  suggestionCard: { borderTop: '1px solid #334155', padding: 16, background: '#0f172a' },
+  suggestionHeader: { fontSize: 12, color: '#64748b', marginBottom: 8 },
+  suggestionText: { background: '#1e293b', padding: '12px', borderRadius: 8, color: '#e2e8f0' },
+  suggestionActions: { display: 'flex', gap: 10, marginTop: 12 },
+  placeholder: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#64748b' },
+  card: { background: '#1e293b', borderRadius: 12, padding: 32, textAlign: 'center', border: '1px solid #334155' },
+  bigIcon: { fontSize: 48, marginBottom: 16 },
+  muted: { color: '#64748b', fontSize: 14 },
+  btn: { background: '#0f172a', color: '#94a3b8', border: '1px solid #334155', borderRadius: 8, padding: '10px 18px', cursor: 'pointer' },
+  btnGreen: { background: '#166534', color: '#86efac', border: 'none', borderRadius: 8, padding: '10px 18px', fontWeight: 600, cursor: 'pointer' },
+  btnAlt: { background: '#1e3a5f', color: '#93c5fd', border: 'none', borderRadius: 8, padding: '10px 18px', cursor: 'pointer' },
+  btnIgnore: { background: '#0f172a', color: '#f87171', border: '1px solid #7f1d1d', borderRadius: 8, padding: '10px 18px', cursor: 'pointer' },
+  qrDot: { width: 10, height: 10, background: '#22c55e', borderRadius: '50%', margin: '12px auto 0', animation: 'pulse 1.5s infinite' },
 }
