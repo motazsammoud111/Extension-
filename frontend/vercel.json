@@ -1,9 +1,5 @@
 {
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
-  ],
-  "env": {
-    "VITE_API_URL": "@api_url",
-    "VITE_WA_BRIDGE_URL": "@wa_bridge_url"
-  }
+  ]
 }
