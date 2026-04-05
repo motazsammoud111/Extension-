@@ -57,7 +57,16 @@ const MAX_CACHE = 30                    // messages max par chat
 // ─────────────────────────────────────────────────────────────────────
 
 const app = express()
-app.use(cors({ origin: '*' }))
+
+// CORS + Private Network Access (Chrome bloque localhost depuis HTTPS)
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader('Access-Control-Allow-Private-Network', 'true')
+  if (req.method === 'OPTIONS') return res.sendStatus(200)
+  next()
+})
 app.use(express.json())
 
 // Statut
