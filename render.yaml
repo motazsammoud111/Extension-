@@ -1,45 +1,44 @@
 # ═══════════════════════════════════════════════════════════════
-# render.yaml — Déploiement du backend sur Render.com (gratuit)
-# Docs : https://render.com/docs/blueprint-spec
-# Usage : connecte ce repo GitHub sur render.com, il détecte
-#         automatiquement ce fichier et crée le service.
+# render.yaml — Déploiement Digital Twin AI sur Render.com
+# Un seul service Docker = Backend Python + Bridge WhatsApp Node.js
 # ═══════════════════════════════════════════════════════════════
 
 services:
   - type: web
     name: digital-twin-backend
-    runtime: python
-    region: frankfurt              # EU pour GDPR
-    plan: free                     # Free tier (750h/mois)
-    rootDir: backend               # Dossier contenant main.py
-
-    buildCommand: pip install -r ../requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: frankfurt
+    plan: free
 
     healthCheckPath: /health
 
-    # Variables d'environnement (à remplir dans le dashboard Render)
     envVars:
       - key: MY_NAME
-        value: Motaz               # Change ton prénom ici
+        value: Motaz
 
       - key: GROQ_API_KEY
-        sync: false                # Entrer manuellement dans le dashboard
+        sync: false
 
       - key: SUPABASE_URL
-        sync: false                # Entrer manuellement dans le dashboard
+        sync: false
 
       - key: SUPABASE_KEY
-        sync: false                # Entrer manuellement dans le dashboard
+        sync: false
+
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
 
       - key: ALLOWED_ORIGINS
-        sync: false                # Ex: https://mon-twin.vercel.app
+        sync: false
 
-      - key: PYTHON_VERSION
-        value: "3.11.0"
+      - key: DATA_DIR
+        value: /data
 
-    # Disque persistant pour SQLite (fallback si Supabase non configuré)
+      - key: WA_BRIDGE_PORT
+        value: "3001"
+
     disk:
       name: twin-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1                    # 1 GB suffisant pour le MVP
+      mountPath: /data
+      sizeGB: 1

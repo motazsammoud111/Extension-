@@ -10,9 +10,11 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
+import httpx
 
 # Ajouter le dossier backend au path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -378,6 +380,46 @@ def get_history(limit: int = 20):
 def get_events(limit: int = 20):
     """Journal des événements système."""
     return {"events": store.get_events(limit=limit)}
+
+
+# ── /wa/* — Proxy vers le bridge WhatsApp local ───────────────
+
+WA_BRIDGE_PORT = int(os.getenv("WA_BRIDGE_PORT", "3001"))
+WA_BRIDGE_URL  = f"http://localhost:{WA_BRIDGE_PORT}"
+
+@app.api_route("/wa/{path:path}", methods=["GET", "POST", "OPTIONS", "DELETE"], tags=["bridge"])
+async def wa_proxy(path: str, request: Request):
+    """
+    Proxy transparent vers le bridge WhatsApp (localhost:3001).
+    Le frontend n'a besoin que de l'URL du backend — plus de VITE_WA_BRIDGE_URL.
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        url = f"{WA_BRIDGE_URL}/{path}"
+        body = await request.body()
+        params = dict(request.query_params)
+        headers = {}
+        if body:
+            headers["Content-Type"] = "application/json"
+        try:
+            resp = await client.request(
+                method=request.method,
+                url=url,
+                content=body,
+                params=params,
+                headers=headers,
+            )
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                media_type=resp.headers.get("content-type", "application/json"),
+            )
+        except (httpx.ConnectError, httpx.TimeoutException):
+            # Bridge pas encore démarré ou hors ligne
+            return Response(
+                content='{"status":"bridge_offline","connected":false,"chats":0,"messages":0,"historySyncDone":false}',
+                status_code=200,
+                media_type="application/json",
+            )
 
 
 # ── /conversations ────────────────────────────────────────────

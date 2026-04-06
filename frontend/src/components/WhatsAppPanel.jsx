@@ -1,7 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import axios from 'axios'
 
-const WA_BRIDGE = import.meta.env.VITE_WA_BRIDGE_URL || 'http://localhost:3001'
+// Le bridge est proxyfié par le backend via /wa/*
+// Plus besoin de VITE_WA_BRIDGE_URL — tout passe par l'URL du backend
+const getWaBridge = (api) => {
+  if (!api) return 'http://localhost:3001'
+  // En prod : https://digital-twin-backend.onrender.com/wa
+  // En dev local : http://localhost:3001 (bridge direct)
+  const isLocalDev = api.includes('localhost')
+  return isLocalDev
+    ? (import.meta.env.VITE_WA_BRIDGE_URL || 'http://localhost:3001')
+    : `${api}/wa`
+}
 
 // ── Formatage des timestamps ──────────────────────────────
 function fmtTime(ts) {
@@ -22,6 +32,8 @@ function fmtFullTime(ts) {
 }
 
 export default function WhatsAppPanel({ api }) {
+  const WA_BRIDGE = getWaBridge(api)
+
   const [status, setStatus]               = useState('disconnected')
   const [qr, setQr]                       = useState(null)
   const [bridgeInfo, setBridgeInfo]       = useState({ chats: 0, messages: 0, syncDone: false })
