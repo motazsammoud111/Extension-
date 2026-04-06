@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).parent))
 
 from personality_engine import PersonalityEngine
-from conversation_analyzer import ConversationAnalyzer
+from conversation_analyzer import ConversationAnalyzer, WhatsAppParser, TelegramParser, InstagramParser
 from response_generator import ResponseGenerator
 from memory_store import MemoryStore
 
@@ -378,6 +378,97 @@ def get_history(limit: int = 20):
 def get_events(limit: int = 20):
     """Journal des événements système."""
     return {"events": store.get_events(limit=limit)}
+
+
+# ── /conversations ────────────────────────────────────────────
+
+@app.get("/conversations", tags=["conversations"])
+def list_imported_conversations():
+    """Liste toutes les conversations importées (fichiers dans raw_conversations)."""
+    convs = []
+    for f in sorted(RAW_DIR.iterdir()):
+        if f.suffix.lower() not in (".txt", ".json"):
+            continue
+        try:
+            size = f.stat().st_size
+            # Compter les messages sans tout parser
+            count = 0
+            if f.suffix.lower() == ".txt":
+                import re as _re
+                pat = _re.compile(r"^\[?\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}")
+                with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                    count = sum(1 for line in fh if pat.match(line))
+            elif f.suffix.lower() == ".json":
+                import json as _json
+                with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                    data = _json.load(fh)
+                count = len(data.get("messages", []))
+            convs.append({
+                "name": f.stem,
+                "filename": f.name,
+                "size_kb": round(size / 1024, 1),
+                "message_count": count,
+            })
+        except Exception:
+            convs.append({"name": f.stem, "filename": f.name, "size_kb": 0, "message_count": 0})
+    return {"conversations": convs, "total": len(convs)}
+
+
+@app.get("/conversations/{name}", tags=["conversations"])
+def get_imported_conversation(name: str, limit: int = 200, offset: int = 0):
+    """Retourne les messages d'une conversation importée."""
+    # Chercher le fichier (avec ou sans extension)
+    found = None
+    for ext in (".txt", ".json"):
+        candidate = RAW_DIR / (name + ext)
+        if candidate.exists():
+            found = candidate
+            break
+    # Essai direct (nom avec extension)
+    if not found:
+        candidate = RAW_DIR / name
+        if candidate.exists():
+            found = candidate
+
+    if not found:
+        raise HTTPException(status_code=404, detail=f"Conversation '{name}' introuvable")
+
+    ext = found.suffix.lower()
+    try:
+        if ext == ".txt":
+            parser = WhatsAppParser()
+        elif ext == ".json":
+            # Détecter Telegram vs Instagram
+            import json as _json
+            with open(found, "r", encoding="utf-8", errors="ignore") as fh:
+                sample = _json.load(fh)
+            if "messages" in sample and sample.get("messages") and "sender_name" in (sample["messages"][0] if sample["messages"] else {}):
+                parser = InstagramParser()
+            else:
+                parser = TelegramParser()
+        else:
+            raise HTTPException(status_code=400, detail="Format non supporté")
+
+        _, all_msgs = parser.parse(found, MY_NAME)
+        all_msgs_dicts = [m.to_dict() for m in all_msgs]
+        # Marquer mes messages
+        for m in all_msgs_dicts:
+            m["is_mine"] = m["sender"].lower() == MY_NAME.lower()
+
+        total = len(all_msgs_dicts)
+        page = all_msgs_dicts[offset: offset + limit]
+
+        return {
+            "name": name,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "messages": page,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lecture : {e}")
 
 
 # ─────────────────────────────────────────────────────────────
