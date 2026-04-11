@@ -99,6 +99,9 @@ class SuggestRequest(BaseModel):
         None,
         description='Historique : [{"role":"user","content":"..."}, ...]',
     )
+    # v2 — RAG et contexte par contact
+    contact_id: str = Field("", description="chat_id WhatsApp pour RAG ciblé et profil contact")
+    contact_name: str = Field("", description="Nom du contact pour personnalisation")
 
 class SuggestResponse(BaseModel):
     response: str
@@ -250,6 +253,8 @@ def suggest_response(req: SuggestRequest):
         conversation_history=req.history,
         person_type=req.person_type,
         context_note=req.context_note,
+        contact_id=req.contact_id,
+        contact_name=req.contact_name,
     )
 
     if "error" in result:

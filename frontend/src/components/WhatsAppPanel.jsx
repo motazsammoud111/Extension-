@@ -122,19 +122,30 @@ export default function WhatsAppPanel({ api }) {
     setLoading(true)
     try {
       const res = await axios.get(`${WA_BRIDGE}/messages/${encodeURIComponent(selectedChat.id)}`)
-      setBridgeMsgs(res.data.messages || [])
-      // Suggestion sur dernier message recu
-      const lastIn = (res.data.messages || []).filter(m => !m.fromMe).slice(-1)[0]
-      if (lastIn?.body) await getSuggestion(lastIn.body)
+      const msgs = res.data.messages || []
+      setBridgeMsgs(msgs)
+      // Suggestion sur dernier message reçu avec contexte complet
+      const lastIn = msgs.filter(m => !m.fromMe).slice(-1)[0]
+      if (lastIn?.body) await getSuggestion(lastIn.body, msgs)
     } catch (err) { console.error(err) }
     setLoading(false)
   }
 
-  async function getSuggestion(msgText) {
+  async function getSuggestion(msgText, allMsgs = []) {
     if (!msgText || !api) return
     try {
+      // Construire l'historique des 15 derniers messages pour le contexte
+      const history = allMsgs.slice(-15).map(m => ({
+        role: m.fromMe ? 'assistant' : 'user',
+        content: m.body || '',
+      }))
+
       const res = await axios.post(`${api}/suggest`, {
-        message: msgText, person_type: 'close_friend',
+        message:      msgText,
+        person_type:  'close_friend',
+        contact_id:   selectedChat?.id   || '',   // pour RAG ciblé
+        contact_name: selectedChat?.name || '',   // pour contexte personnalisé
+        history:      history,                    // contexte conversation
       })
       setSuggestion(res.data)
     } catch {}
@@ -346,6 +357,11 @@ export default function WhatsAppPanel({ api }) {
                     <div style={S.suggHeader}>
                       🤖 Réponse suggérée
                       <span style={S.confBadge}>{Math.round((suggestion.confidence || 0) * 100)}%</span>
+                      {suggestion.rag_examples > 0 && (
+                        <span style={{ ...S.confBadge, background: '#1e3a5f', color: '#60a5fa' }}>
+                          🔍 {suggestion.rag_examples} exemples réels
+                        </span>
+                      )}
                     </div>
                     <div style={S.suggText}>{suggestion.response}</div>
                     <div style={S.suggActions}>
