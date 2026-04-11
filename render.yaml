@@ -71,7 +71,5 @@ services:
       - key: DATA_DIR
         value: /data
 
-      # URL du bridge Node.js — à mettre à jour après déploiement du bridge
-      # ex: https://digital-twin-bridge-xxxx.onrender.com
       - key: WA_BRIDGE_URL
-        sync: false
+        value: https://digital-twin-bridge.onrender.com
