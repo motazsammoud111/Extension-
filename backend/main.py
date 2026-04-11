@@ -384,8 +384,7 @@ def get_events(limit: int = 20):
 
 # ── /wa/* — Proxy vers le bridge WhatsApp local ───────────────
 
-WA_BRIDGE_PORT = int(os.getenv("WA_BRIDGE_PORT", "3001"))
-WA_BRIDGE_URL  = f"http://localhost:{WA_BRIDGE_PORT}"
+WA_BRIDGE_URL = os.getenv("WA_BRIDGE_URL", "http://localhost:3001")
 
 @app.api_route("/wa/{path:path}", methods=["GET", "POST", "OPTIONS", "DELETE"], tags=["bridge"])
 async def wa_proxy(path: str, request: Request):

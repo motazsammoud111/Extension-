@@ -1,17 +1,54 @@
 # ═══════════════════════════════════════════════════════════════
-# render.yaml — Déploiement Digital Twin AI sur Render.com
-# Un seul service Docker = Backend Python + Bridge WhatsApp Node.js
+# render.yaml — Digital Twin AI sur Render.com
+# 2 services séparés : Backend Python + Bridge WhatsApp Node.js
+# Pas de Docker — chaque service tourne dans son runtime natif
 # ═══════════════════════════════════════════════════════════════
 
 services:
+
+  # ── 1. WhatsApp Bridge (Node.js) ────────────────────────────
   - type: web
-    name: digital-twin-backend
-    runtime: docker
-    dockerfilePath: ./Dockerfile
+    name: digital-twin-bridge
+    runtime: node
     region: frankfurt
     plan: free
-
+    rootDir: whatsapp-bridge
+    buildCommand: npm install
+    startCommand: node index.js
     healthCheckPath: /health
+
+    disk:
+      name: bridge-auth
+      mountPath: /data
+      sizeGB: 1
+
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: AUTH_DIR
+        value: /data/.wa_auth
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: NODE_ENV
+        value: production
+
+  # ── 2. Backend FastAPI (Python) ─────────────────────────────
+  - type: web
+    name: digital-twin-backend
+    runtime: python
+    region: frankfurt
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r ../requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+
+    disk:
+      name: twin-data
+      mountPath: /data
+      sizeGB: 1
 
     envVars:
       - key: MY_NAME
@@ -35,10 +72,7 @@ services:
       - key: DATA_DIR
         value: /data
 
-      - key: WA_BRIDGE_PORT
-        value: "3001"
-
-    disk:
-      name: twin-data
-      mountPath: /data
-      sizeGB: 1
+      # URL du bridge Node.js — à mettre à jour après déploiement du bridge
+      # ex: https://digital-twin-bridge-xxxx.onrender.com
+      - key: WA_BRIDGE_URL
+        sync: false
