@@ -28,7 +28,7 @@ const {
 // Configuration
 // ─────────────────────────────────────────────────────────
 const PORT      = process.env.PORT || process.env.WA_BRIDGE_PORT || 3001
-const AUTH_DIR  = process.env.AUTH_DIR || join(__dirname, '.wa_auth')
+const AUTH_DIR  = process.env.AUTH_DIR || join(__dirname, '.wa_auth')  // défaut: dossier local du bridge
 const TWIN_API  = process.env.TWIN_API_URL || 'https://digital-twin-backend-9z0t.onrender.com'
 
 // Supabase
@@ -43,7 +43,16 @@ if (SUPABASE_URL && SUPABASE_KEY) {
   console.log('⚠️  Supabase non configure — les messages seront seulement en memoire')
 }
 
-if (!existsSync(AUTH_DIR)) mkdirSync(AUTH_DIR, { recursive: true })
+try {
+  if (!existsSync(AUTH_DIR)) mkdirSync(AUTH_DIR, { recursive: true })
+} catch (e) {
+  console.warn(`⚠️  Impossible de créer AUTH_DIR (${AUTH_DIR}): ${e.message}`)
+  console.warn('   → Utilisation du dossier local .wa_auth')
+  // fallback: dossier local toujours accessible
+  const fallbackDir = join(__dirname, '.wa_auth')
+  if (!existsSync(fallbackDir)) mkdirSync(fallbackDir, { recursive: true })
+  process.env.AUTH_DIR = fallbackDir
+}
 
 // ─────────────────────────────────────────────────────────
 // Etat global (cache memoire rapide)
