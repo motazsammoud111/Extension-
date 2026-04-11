@@ -28,8 +28,26 @@ const {
 // Configuration
 // ─────────────────────────────────────────────────────────
 const PORT      = process.env.PORT || process.env.WA_BRIDGE_PORT || 3001
-const AUTH_DIR  = process.env.AUTH_DIR || join(__dirname, '.wa_auth')  // défaut: dossier local du bridge
 const TWIN_API  = process.env.TWIN_API_URL || 'https://digital-twin-backend-9z0t.onrender.com'
+
+// ── AUTH_DIR : toujours utiliser un dossier accessible ────────
+// Si l'env var pointe vers /data (sans disk Render), on bascule
+// automatiquement vers le dossier local du projet
+function resolveAuthDir() {
+  const requested = process.env.AUTH_DIR || join(__dirname, '.wa_auth')
+  // Tester si le parent est accessible en écriture
+  try {
+    mkdirSync(requested, { recursive: true })
+    return requested
+  } catch {
+    console.warn(`⚠️  AUTH_DIR inaccessible (${requested}) → fallback local`)
+    const local = join(__dirname, '.wa_auth')
+    mkdirSync(local, { recursive: true })
+    return local
+  }
+}
+const AUTH_DIR = resolveAuthDir()
+console.log(`📁 Auth dir: ${AUTH_DIR}`)
 
 // Supabase
 const SUPABASE_URL = process.env.SUPABASE_URL || ''
@@ -41,17 +59,6 @@ if (SUPABASE_URL && SUPABASE_KEY) {
   console.log('✅ Supabase connecte')
 } else {
   console.log('⚠️  Supabase non configure — les messages seront seulement en memoire')
-}
-
-try {
-  if (!existsSync(AUTH_DIR)) mkdirSync(AUTH_DIR, { recursive: true })
-} catch (e) {
-  console.warn(`⚠️  Impossible de créer AUTH_DIR (${AUTH_DIR}): ${e.message}`)
-  console.warn('   → Utilisation du dossier local .wa_auth')
-  // fallback: dossier local toujours accessible
-  const fallbackDir = join(__dirname, '.wa_auth')
-  if (!existsSync(fallbackDir)) mkdirSync(fallbackDir, { recursive: true })
-  process.env.AUTH_DIR = fallbackDir
 }
 
 // ─────────────────────────────────────────────────────────
